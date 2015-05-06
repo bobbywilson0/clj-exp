@@ -1,5 +1,8 @@
 (ns ^:figwheel-always cvas.core
-  (:require [goog.dom :as dom]))
+  (:require [goog.dom :as dom]
+            [cljs.core.async :as async
+             :refer [<! >! chan put!]])
+  (:require-macros [cljs.core.async.macros :refer [go]]))
 
 (enable-console-print!)
 
@@ -20,7 +23,7 @@
             :red-bench  []
             :turn       :red
             :actions    0
-            :hover-tile []
+            :selected-tile []
             :images-loaded false}))
 
 (defn unit-sprite-path [type]
@@ -31,8 +34,11 @@
         :ball "images/ball.gif"))
 
 (def board-offset 80)
+(def board-width 9)
+(def board-height 5)
 (def tile-size 64)
 (def ctx (.getContext (dom/getElement "canvas") "2d"))
+(def mouse-chan (chan))
 (set! (.-imageSmoothingEnabled ctx) false)
 
 (defn reset-canvas []
@@ -68,13 +74,9 @@
    (* y tile-size)])
 
 (defn draw-unit! [unit]
-  (reset-canvas)
-  (let [player-sprite (new js/Image)
-        [x y] (grid-to-pixels (:x unit) (:y unit))]
+  (let [player-sprite (new js/Image)]
     (set! (.-src player-sprite) (unit-sprite-path (:type unit)))
-    (set! (.-width player-sprite) "32px")
-    (set! (.-width player-sprite) "64px")
-    (set! (.-onload player-sprite) #(.drawImage ctx player-sprite x y))
+    ;(set! (.-onload player-sprite)
     player-sprite))
 
 
@@ -88,9 +90,6 @@
     (.drawImage ctx player-sprite x y)
     player-sprite))
 
-(defn mouse-down-listener [e]
-  (println "GRID: " (pixels-to-grid (.-layerX e) (.-layerY e))))
-
 (defn find-one-unit-by [x y col]
   (first
     (filter
@@ -100,39 +99,40 @@
           (= y (:y unit))))
       (:units col))))
 
-(defn draw-highlighted-tile! [x y]
+(defn draw-highlighted-tile! [color x y]
   (.beginPath ctx)
   (.rect ctx x y tile-size tile-size)
-  (set! (.-fillStyle ctx) "lightgray")
+  (set! (.-fillStyle ctx) color)
   (.fill ctx)
   (set! (.-lineWidth ctx) 1)
   (set! (.-strokeStyle ctx) "black")
   (.stroke ctx))
 
-(defn select-tile [e]
-  (swap! game assoc :hover-tile (pixels-to-grid (.-layerX e) (.-layerY e))))
+(defn mouse-move [e]
+  (put! mouse-chan {:type :mouse-move :coords (pixels-to-grid (.-layerX e) (.-layerY e))}))
 
-(defn highlight-tile [x y]
+(defn mouse-down [e]
+  (put! mouse-chan {:type :mouse-down :coords (pixels-to-grid (.-layerX e) (.-layerY e))}))
+
+(defn highlight-tile [color x y]
+  (println color x y)
   (let [[pixel-x pixel-y] (grid-to-pixels x y)
         unit (find-one-unit-by x y @game)]
-    (if (and (> pixel-x 80) (< pixel-x 650))
+    (if (and (< x board-width) (>= x 0) (< y board-height) (>= y 0))
       (if unit
         (do
-          (draw-highlighted-tile! (- pixel-x (/ tile-size 4)) pixel-y)
+          (draw-highlighted-tile! color (- pixel-x (/ tile-size 4)) pixel-y)
           (redraw-unit! unit))
-        (draw-highlighted-tile! (- pixel-x (/ tile-size 4)) pixel-y)))))
+        (draw-highlighted-tile! color (- pixel-x (/ tile-size 4)) pixel-y)))))
 
-
-
-(.addEventListener (dom/getElement "canvas") "mousedown" mouse-down-listener false)
-(.addEventListener (dom/getElement "canvas") "mousemove" select-tile false)
+(.addEventListener (dom/getElement "canvas") "mousedown" mouse-down false)
+(.addEventListener (dom/getElement "canvas") "mousemove" mouse-move false)
 
 
 (defn draw-screen []
-  (js/requestAnimationFrame #(draw-screen))
   (.clearRect ctx 0 0 (.-width (dom/getElement "canvas")) (.-height (dom/getElement "canvas")))
   (draw-tiles! 0 50 1 3)
-  (draw-tiles! board-offset 0 9 5)
+  (draw-tiles! board-offset 0 board-width board-height)
   (draw-tiles! 670 50 1 3)
 
   (if (not (:images-loaded @game))
@@ -140,7 +140,23 @@
       (doall (map draw-unit! (:units @game)))
       (swap! game assoc :images-loaded true))
     (doall (map redraw-unit! (:units @game))))
-  (apply highlight-tile (:hover-tile @game)))
+  (println (:selected-tile @game))
+  (apply highlight-tile "yellow" (:selected-tile @game)))
 
+(defn handle-event [ch]
+  (go
+    (loop []
+      (let [event (<! ch)]
+        (case (:type event)
+          :mouse-move
+          (do
+            (draw-screen)
+            (apply highlight-tile "#eee" (:coords event)))
+          :mouse-down
+          (do
+            (swap! game assoc :selected-tile (:coords event))
+            (draw-screen)))
+        (recur)))))
 
 (draw-screen)
+(handle-event mouse-chan)
